@@ -3,6 +3,12 @@ phage-armband
 
 phage armband code base
 
+Note dependency upon my branch of the NeoPixel library:
+
+https://github.com/bunnie/Adafruit_NeoPixel
+
+You must use this branch to get the loop length detection features to work.
+
 Features implemented to date:
 
 * button to switch mode of operation
