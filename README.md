@@ -22,3 +22,9 @@ Features implemented to date:
   2. rainbow "walk" (just two LEDS at a time in rainbow mode) 125mW fixed (power does not scale with strip length)
   3. flashlight "wave" (two LEDs at 100% white brightness, cycling around the band) 350 mW fixed
   4. strobe mode (all LEDs strobe in random pattern) ~18mW/LED
+  5. sound responsive mode
+
+* sound responsive mode
+  * works decently okay is a "VU meter" mode, although a bit strobe-y
+  * tried to take the edge of the strobe-y ness by having only two LEDs at a time reflect the beat
+  * needs more work down the road, but probably should be prototyped with final mic & gain tunings
