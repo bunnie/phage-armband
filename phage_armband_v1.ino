@@ -12,11 +12,12 @@
 // start with just one pixel in the strip, we assume we can auto-detect length
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(1, WS2812_OUT, NEO_GRB + NEO_KHZ800);
 
-#define PIXMAX  (112)  // up to 1.8 meters of LEDs; may have to trim if we use more global variables...
+//#define PIXMAX  (112)  // up to 1.8 meters of LEDs; may have to trim if we use more global variables...
+#define PIXMAX 90
 
 ////////////////////
 /// MATH ROUTINES
-/// help with manipulating pixels
+/// help with manipulating pixels 
 ////////////////////
 
 // saturating subtract. returns a-b, stopping at 0. assumes 8-bit types
@@ -151,6 +152,8 @@ void setup() {
   strip.setinpin(WS2812_IN);
   strip.begin();  // just initializes pins & stuff
 
+  strip.setBrightness(1); // reduce brightness for this test
+
   // sweep through all chain lengths until we've found the max length
   for( int i = 1; i <= PIXMAX; i++ ) {
     strip.setPixelColor(strip.numPixels()-1, 0xFFFFFF);  // set the color of the furthest-out pixel to white
@@ -159,6 +162,7 @@ void setup() {
     strip.resize(i);
   }
   strip.resize(strip.numPixels() - 1 ); // we have to go over by one to mesure the true length of the chain
+//  strip.resize(30 ); // we have to go over by one to mesure the true length of the chain
   return;
 
 }
@@ -172,204 +176,123 @@ void setup() {
 #define NUM_ANIMATIONS 5
 
 void loop() {
+
   buttonLoop();
 
   mode = mode % NUM_ANIMATIONS; // because the button manager doesn't care about the modulus
 
   switch( mode ) {
   case 0:
-    rainbowCycle(30, 66, 1);  // 66 + depth 64 for individuals, 128 + depth 128 for strangelove
+    wave_rainbow(0);  // good low power setting
+    //rainbowCycle(30, 66, 1);  // 66 + depth 64 for individuals, 128 + depth 128 for strangelove
     break;
   case 1:
-    wave_rainbow();  // good low power setting
+    vumeter2(1);
     break;
   case 2:
-    wave_white(); // higher power, higher brightness, sort of a "flashlight mode"
+    wave_rainbow(1); // use a flag to convert rainbow to white
     break;
   case 3:  
-    sparkle(0xFFFFFF, 25, 150); // for strobe effect
+    vumeter2(0); // make LEDs go up and down according to music volume
     break;
   case 4:
-    vumeter(); // make LEDs go up and down according to music volume
+    sparkle(0xFFFFFF, 25, 150); // for strobe effect
     break;
     // when adding a case be sure to change the mode modulus above
   default:
-    rainbowCycle(30, 66, 1);  // 66 + depth 64 for individuals, 128 + depth 128 for strangelove
+    vumeter2(0);
+    //rainbowCycle(30, 66, 1);  // 66 + depth 64 for individuals, 128 + depth 128 for strangelove
   }     
 
 }
 
-#define AGC_INTERVAL 1000
-#define SAMPLES 128
-#define DC_VAL 511
 
-////////
-// sample_adc() should be called as often as possible
-////////
-#define SAMPLE_INTERVAL 2000  // average interval in microseconds
-#define SAMPLE_DEPTH 32
-#define MID_THRESH_H 538  // 5% over 512
-#define MID_THRESH_L 486  // 5% below 512
-unsigned long sampletime = 0;
-uint16_t sampletime_target = SAMPLE_INTERVAL;
-uint16_t samples[SAMPLE_DEPTH];
-uint8_t sample_index = 0;
-uint16_t last_sample_max = 512;
-#define AVG_MAX 1  // 0 = don't average the max value over an interval
-void sample_adc() {
-  if( (micros() - sampletime) > sampletime_target ) {
+// this function attempts to determine the average noise level
+
+#define AVG_SAMPLE_INTERVAL 20000  // average interval in microseconds
+#define SAMP_AVG_DEPTH 64  // this is eating 128 bytes out of 512!
+uint16_t avg_samples[SAMP_AVG_DEPTH];
+uint8_t avg_sample_index = 0;
+unsigned long avg_sampletime = 0;
+unsigned long avg_sampletime_target = AVG_SAMPLE_INTERVAL;
+#define MID_THRESH_H 665  // 30% over 512
+#define MID_THRESH_L 358  // 30% below 512
+uint16_t avg_value = 0;
+
+void sample_average() {
+  if( (micros() - avg_sampletime) > avg_sampletime_target ) {
     uint16_t temp = analogRead(A2) & 0x3FF;
     if( temp < MID_THRESH_L ) // "rectify" the signal, since 512 is the midpoint
-       temp = 1023 - temp;
+      temp = 1023 - temp;
     if( temp < MID_THRESH_H ) // toss out the lower 10%, it's going to be noise/irrelevant
       temp = MID_THRESH_H;
     temp = temp - MID_THRESH_H; // now we have a rectified, low-noise filtered signal
-    samples[sample_index] = temp;
-    sample_index = (sample_index + 1) % SAMPLE_DEPTH;
-    sampletime_target = micros() + random(SAMPLE_INTERVAL * 2); // randomize to dither aliasing artifacts
-  }
-  
-  if( sample_index == 0 ) {
-    bubblesort(samples);
-#if AVG_MAX
-    uint32_t avg = 0;
-    for( int i = 0; i < SAMPLE_DEPTH / 2; i++ ) {
-       avg += samples[i];
+    avg_samples[avg_sample_index] = temp;
+    avg_sample_index = (avg_sample_index + 1) % SAMP_AVG_DEPTH;
+    avg_sampletime_target = micros() + random(AVG_SAMPLE_INTERVAL * 2); // randomize to dither aliasing artifacts
+    
+    uint32_t local_avg = 0;
+    for( int i = 0; i < SAMP_AVG_DEPTH; i++ ) {
+      local_avg += avg_samples[i];
     }
-    avg = avg / (SAMPLE_DEPTH / 2);
-    last_sample_max = (uint16_t) avg;
-#else
-    last_sample_max = samples[0]; // just take the max from the sort
-#endif
-    interval_max();
+    avg_value = (uint16_t) (local_avg / SAMP_AVG_DEPTH);
   }
 }
 
-/// this is called by the sampling program every time a new sample set is updated
-#define MAX_INTERVAL  2000   // in ms
-uint16_t max_interval_value = 512;  // this is the output of the computation
-unsigned long maxtime = 0;
-uint16_t max_running_value = 0;  // this holds the intermediate value between calls
-void interval_max() {
-  if( millis() - maxtime > MAX_INTERVAL ) {
-    maxtime = millis();
-    // update the interval (long-term) value from the computed max value over the past interval
-    max_interval_value = max_running_value; // this is the output of the function
-    max_running_value = 0; // reset the search intermediate
-  }
-  // check if our running value needs an updated
-  if( last_sample_max > max_running_value ) {
-    max_running_value = last_sample_max; 
-  }
-}
-
-void bubblesort(uint16_t *array) {
-  uint8_t n = SAMPLE_DEPTH;
-  uint16_t swap;
-  for (uint8_t c = 0 ; c < ( n - 1 ); c++) {
-    for (uint8_t d = 0 ; d < n - c - 1; d++)  {
-      if (array[d] < array[d+1]) /* For increasing order use > */ {
-        swap       = array[d];
-        array[d]   = array[d+1];
-        array[d+1] = swap;
-      }
-    }
-  }
-}
-
-#define VU_COLOR_INTERVAL 10
-#define BEAT_DEADTIME 100
-
-#define SIMPLE_VU 1  // 1 = run the simplest VU setting that we know works
-void vumeter() {
-  analogReference(DEFAULT);
-  pinMode(A2, INPUT);
-  uint16_t j = 0;
-  uint8_t divisor = 0;
-  unsigned long time_beat = 0;
-  
-  uint16_t hotspot = 0;
-  uint16_t nextspot = 1;
-  uint8_t hotpix = 255;
-  uint8_t nextpix = 128;
-  uint32_t hotcolor = 0;
-  uint32_t nextcolor = 0;
-  
+#define VU_X_PERIOD 3.0   // number of waves across the entire band
+#define VU_T_PERIOD 2500  // time to complete 2pi rotation, in integer milliseconds
+void vumeter2(uint8_t mode) {
+  uint32_t c;
+  uint8_t t;
+  uint32_t reftime;
+  uint32_t curtime;
   strip.setBrightness(255);
+  reftime = millis();
+  uint16_t j = 0;
+  uint16_t colorrate = 0;
+  uint32_t offset = 0;
+  float sign = 1.0;
   
+  if( mode != 0 )
+    sign = -1.0;
+    
   while(1) {
-      sample_adc(); // this handles all the updating of samples and intervals
-      uint32_t local_avg = 0;
-      for( uint8_t i = 0; i < SAMPLE_DEPTH; i++ ) {
-        local_avg += samples[i];
-      }
-      local_avg /= SAMPLE_DEPTH; // compute the average sample value, should be a value <512
+    curtime = millis() + offset;
+    if( (curtime - reftime) > VU_T_PERIOD )
+       reftime = curtime;
+       
+    int rate = 0;
+    sample_average(); 
+    if( mode == 0 )
+      rate = map(avg_value, 0, 25, 0, 100);
+    else
+      rate = map(avg_value, 0, 8, 0, 100);
       
-      /// color update section
-      divisor = (divisor + 1) % VU_COLOR_INTERVAL;
-      if( divisor == 0 ) {
-        // update colors
-        j = (j + 1) % (256 * 5);
-        for(uint16_t i=0; i< strip.numPixels(); i++) {
-          if( (i == hotspot) || (i == nextspot) )
-            strip.setPixelColor(i, Wheel(((i * 256 / strip.numPixels()) + j) & 255)); // start bright
-          else
-            strip.setPixelColor(i, alphaPix(Wheel(((i * 256 / strip.numPixels()) + j) & 255), 16)); // dim the rest of the strip
-          
+    offset += rate;
+    if( offset > 0x80000000) {
+      offset = 0;
+      curtime = millis();
+      reftime = curtime;
+    }
+    for( uint16_t i = 0; i < strip.numPixels(); i++ ) {
+      c = (uint8_t) (sin( (((float) i / ((float)strip.numPixels() - 1.0)) * VU_X_PERIOD +
+         sign * (((float)(curtime - reftime)) / ((float) VU_T_PERIOD)))  * 6.283185 ) * 100.0 + 110.0);
+      c = c * c;
+      c = (c >> 8) & 0xFF;
+      strip.setPixelColor(i, alphaPix(Wheel(((i * 256 / strip.numPixels()) + j) & 255), c));
+      colorrate ++;
+      if( (colorrate % 7) == 0 ) {
+        j++;
+        if( j == (256 * 5) ) {
+          j = 0;
         }
-        hotcolor = strip.getPixelColor(hotspot);
-        nextcolor = strip.getPixelColor(nextspot);
       }
-
-      strip.setPixelColor( hotspot, alphaPix(hotcolor, hotpix ) );
-      strip.setPixelColor( nextspot, alphaPix(nextcolor, nextpix ) );    
-
-      if( local_avg < 40 )
-        local_avg = 12;
-        
-      if( local_avg > 255 ) local_avg = 255; 
-
-      strip.setPixelColor( hotspot, alphaPix(strip.getPixelColor(hotspot), local_avg ) );
-      strip.setPixelColor( nextspot, alphaPix(strip.getPixelColor(nextspot), local_avg ) );
-
-      if( divisor == 0 ) {      
-        // on each step, transfer one bit of energy from the hotspot to the next increment up
-        hotpix = satsub_8( hotpix, 1 );
-        nextpix = satadd_8( nextpix, 1 );     
-
-        if( hotpix == 128 ) {
-          hotspot = hotspot + 1;
-          if( hotspot == strip.numPixels() )
-            hotspot = 0;
-            nextspot = nextspot + 1;
-          if( nextspot == strip.numPixels() )
-            nextspot = 0;
-
-          hotpix = 255;
-          nextpix = 128;
-        }    
-      }
-      strip.show();
-      if( buttonLoop() ) return;  
-#if 0      
-      /// intensity update section
-#if SIMPLE_VU
-      if( local_avg < 40 )
-        local_avg = 12;
-        
-      if( local_avg > 255 ) local_avg = 200; // save power and eyes, go to 200
-      strip.setBrightness(local_avg);
-      strip.show();
-      if( buttonLoop() )  return;   
-#else
-      strip.setBrightness(max_interval_value / 2);
-//      strip.setBrightness(last_sample_max / 2);
-      strip.show();
-      if( buttonLoop() )  return;       
-#endif
-#endif
+    }  
+    strip.show();
+    if( buttonLoop() ) return;
   }
 }
+
 /////////////////////////////
 //// SPARKLE - stroboscopic effect
 /////////////////////////////
@@ -380,7 +303,7 @@ void sparkle(uint32_t c, uint16_t time_on, uint16_t time_off) {
 
   target = (uint16_t) random(strip.numPixels());
   for( uint16_t i = 0; i < strip.numPixels(); i++ ) {
-    if( random(strip.numPixels()) < (strip.numPixels() / 4) )
+    if( random(strip.numPixels()) < (strip.numPixels() / 3) )
       strip.setPixelColor(i, c);
     else
       strip.setPixelColor(i, 0);
@@ -396,61 +319,41 @@ void sparkle(uint32_t c, uint16_t time_on, uint16_t time_off) {
   delay( random(time_off) + time_off / 5 );
 }
 
-////////////////////////////
-// this is a full-bright white wave that moves gracefully from pixel to pixel
-////////////////////////////
-void wave_white() {
-  uint16_t hotspot = 0;
-  uint16_t nextspot = 1;
-  uint32_t hotpix;
-  uint32_t nextpix;
-
-  strip.setBrightness(255);  // restore brightness setting
-  // first clear the array
-  for( uint16_t i = 0; i < strip.numPixels(); i++ ) {
-    strip.setPixelColor(i, 0);
-  }
-  strip.setPixelColor(hotspot, 0xFFFFFF); // set an initial "seed" color
-
-  while(1) {
-    // on each step, transfer one bit of energy from the hotspot to the next increment up
-    hotpix = strip.getPixelColor(hotspot);
-    nextpix = strip.getPixelColor(nextspot);
-    hotpix = satsub_8p( hotpix, 1 );
-    nextpix = satadd_8p( nextpix, 1 );
-    strip.setPixelColor( hotspot, hotpix );
-    strip.setPixelColor( nextspot, nextpix );
-    if( hotpix == 0 ) {
-      hotspot = nextspot;
-      nextspot = (nextspot + 1) % strip.numPixels();
-    }
-    strip.show();
-    if( buttonLoop() )  return;     
-    delay(1);
-  }
-}
-
 ///////////////////////////
 // this is a nice, power-saving but pretty animation
 // may want to tweak to give more active pixels if the strip is very long
 ///////////////////////////
 #define MAX_WAVE_RAINBOW 165
-void wave_rainbow() {
+void wave_rainbow(uint8_t white) {
   uint16_t hotspot = 0;
   uint16_t nextspot = 1;
   uint8_t hotpix = MAX_WAVE_RAINBOW;
   uint8_t nextpix = 0;
+  
+  uint16_t r_hotspot = strip.numPixels() - 1;
+  uint16_t r_nextspot = strip.numPixels() - 2;
+  uint8_t r_hotpix = MAX_WAVE_RAINBOW;
+  uint8_t r_nextpix = 0;
+  
   uint16_t j;
   j = 0;
   uint8_t colorrate = 0;
+  
+  if(white) {
+    uint8_t hotpix = 255;
+    uint8_t r_hotpix = 255;
+  }
   
   strip.setBrightness(255);  // restore brightness setting  
   while(1) {
 
     for(uint16_t i=0; i< strip.numPixels(); i++) {
-      if( (i == hotspot) || (i == nextspot) )
-        strip.setPixelColor(i, Wheel(((i * 256 / strip.numPixels()) + j) & 255));
-      else
+      if( (i == hotspot) || (i == nextspot) || (i == r_hotspot) || (i == r_nextspot) ) {
+        if( white )
+           strip.setPixelColor(i, 0xffffff);
+        else
+           strip.setPixelColor(i, Wheel(((i * 256 / strip.numPixels()) + j) & 255));
+      } else
         strip.setPixelColor(i, 0);
     }
     colorrate ++;
@@ -463,10 +366,15 @@ void wave_rainbow() {
 
     strip.setPixelColor( hotspot, alphaPix(strip.getPixelColor(hotspot), hotpix) );
     strip.setPixelColor( nextspot, alphaPix(strip.getPixelColor( nextspot), nextpix ) );
+    strip.setPixelColor( r_hotspot, alphaPix(strip.getPixelColor(r_hotspot), r_hotpix) );
+    strip.setPixelColor( r_nextspot, alphaPix(strip.getPixelColor( r_nextspot), r_nextpix ) );
 
     // on each step, transfer one bit of energy from the hotspot to the next increment up
-    hotpix = satsub_8( hotpix, 1 );
-    nextpix = satadd_8( nextpix, 1 );     
+    hotpix = satsub_8( hotpix, 6 );
+    nextpix = satadd_8( nextpix, 6 );     
+
+    r_hotpix = satsub_8( r_hotpix, 6 );
+    r_nextpix = satadd_8( r_nextpix, 6 );     
 
     if( hotpix == 0 ) {
       hotspot = hotspot + 1;
@@ -475,13 +383,31 @@ void wave_rainbow() {
       nextspot = nextspot + 1;
       if( nextspot == strip.numPixels() )
         nextspot = 0;
-
-      hotpix = MAX_WAVE_RAINBOW;
+      if(white)
+        hotpix = 255;
+      else
+        hotpix = MAX_WAVE_RAINBOW;
       nextpix = 0;
     }
+    
+    if( r_hotpix == 0 ) {
+      r_hotspot = r_hotspot - 1;
+      if( r_hotspot == 0 )
+        r_hotspot = strip.numPixels() - 1;
+      r_nextspot = r_nextspot - 1;
+      if( r_nextspot == 0 )
+        r_nextspot = strip.numPixels() - 1;
+
+      if(white)
+        r_hotpix = 255;
+      else
+        r_hotpix = MAX_WAVE_RAINBOW;
+      r_nextpix = 0;
+    }
+
     strip.show();
     if( buttonLoop() )  return;   
-    delay(1);
+//    delay(1);
   }
 }
 
